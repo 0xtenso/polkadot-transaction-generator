@@ -1,5 +1,6 @@
 const { ApiPromise, WsProvider, Keyring } = require('@polkadot/api');
 const { cryptoWaitReady } = require('@polkadot/util-crypto');
+const readline = require('readline');
 
 class PolkadotTransactionGenerator {
   constructor() {
@@ -22,13 +23,13 @@ class PolkadotTransactionGenerator {
   }
 
   /**
-   * Create a transfer transaction
+   * Create and send a transfer transaction
    * @param {string} privateKey - Private key in hex format (0x...)
    * @param {string} toAddress - Recipient's wallet address
    * @param {string|number} amount - Amount to transfer in planck (smallest unit)
-   * @returns {Object} Transaction object with details and send function
+   * @returns {Object} Transaction result
    */
-  async createTransaction(privateKey, toAddress, amount) {
+  async sendTransaction(privateKey, toAddress, amount) {
     try {
       // Create keypair from private key
       const sender = this.keyring.addFromSeed(privateKey);
@@ -44,46 +45,49 @@ class PolkadotTransactionGenerator {
       // Get transaction fee estimation
       const info = await transfer.paymentInfo(sender);
       
-      return {
-        from: sender.address,
-        to: toAddress,
-        amount: amount.toString(),
-        estimatedFee: info.partialFee.toString(),
-        
-        // Send the transaction
-        send: async () => {
-          return new Promise((resolve, reject) => {
-            transfer.signAndSend(sender, ({ status, events }) => {
-              if (status.isInBlock) {
-                console.log(`Transaction included in block: ${status.asInBlock}`);
-                
-                // Check for transaction success/failure
-                const success = events.some(({ event }) => 
-                  this.api.events.system.ExtrinsicSuccess.is(event)
-                );
-                
-                if (success) {
-                  resolve({
-                    success: true,
-                    blockHash: status.asInBlock.toString(),
-                    txHash: transfer.hash.toString()
-                  });
-                } else {
-                  const errorEvent = events.find(({ event }) =>
-                    this.api.events.system.ExtrinsicFailed.is(event)
-                  );
-                  reject(new Error(`Transaction failed: ${errorEvent?.event?.data}`));
-                }
-              } else if (status.isFinalized) {
-                console.log(`Transaction finalized: ${status.asFinalized}`);
-              }
-            }).catch(reject);
-          });
-        }
-      };
+      console.log('\nTransaction Details:');
+      console.log(`From: ${sender.address}`);
+      console.log(`To: ${toAddress}`);
+      console.log(`Amount: ${this.planckToDot(amount)} DOT`);
+      console.log(`Estimated Fee: ${this.planckToDot(info.partialFee)} DOT`);
+      console.log('Sending transaction...\n');
+      
+      // Send the transaction
+      return new Promise((resolve, reject) => {
+        transfer.signAndSend(sender, ({ status, events }) => {
+          if (status.isInBlock) {
+            console.log(`Transaction included in block: ${status.asInBlock}`);
+            
+            // Check for transaction success/failure
+            const success = events.some(({ event }) => 
+              this.api.events.system.ExtrinsicSuccess.is(event)
+            );
+            
+            if (success) {
+              const result = {
+                success: true,
+                blockHash: status.asInBlock.toString(),
+                txHash: transfer.hash.toString(),
+                from: sender.address,
+                to: toAddress,
+                amount: this.planckToDot(amount) + ' DOT',
+                fee: this.planckToDot(info.partialFee) + ' DOT'
+              };
+              resolve(result);
+            } else {
+              const errorEvent = events.find(({ event }) =>
+                this.api.events.system.ExtrinsicFailed.is(event)
+              );
+              reject(new Error(`Transaction failed: ${errorEvent?.event?.data}`));
+            }
+          } else if (status.isFinalized) {
+            console.log(`Transaction finalized: ${status.asFinalized}`);
+          }
+        }).catch(reject);
+      });
       
     } catch (error) {
-      throw new Error(`Failed to create transaction: ${error.message}`);
+      throw new Error(`Failed to send transaction: ${error.message}`);
     }
   }
 
@@ -126,46 +130,135 @@ class PolkadotTransactionGenerator {
   }
 }
 
-// Simple usage example
-async function example() {
-  const generator = new PolkadotTransactionGenerator();
+// Terminal input helper functions
+function createReadlineInterface() {
+  return readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+}
+
+function askQuestion(rl, question) {
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      resolve(answer.trim());
+    });
+  });
+}
+
+async function getUserInputs() {
+  const rl = createReadlineInterface();
   
   try {
-    // Initialize connection
-    await generator.initialize('wss://westend-rpc.polkadot.io'); // Using testnet
+    console.log('=== Polkadot Transaction Generator ===\n');
     
-    // Example private key (32 bytes hex) - DO NOT use in production
-    const privateKey = '0x' + '0'.repeat(64); // Replace with actual private key
-    const receiverAddress = '5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY';
-    const amount = generator.dotToPlanck(1); // 1 DOT
+    // Get network choice
+    console.log('Choose network:');
+    console.log('1. Westend Testnet (recommended for testing)');
+    console.log('2. Polkadot Mainnet (real DOT)');
+    const networkChoice = await askQuestion(rl, 'Enter choice (1 or 2): ');
     
-    // Create transaction
-    const transaction = await generator.createTransaction(
+    const network = networkChoice === '2' 
+      ? 'wss://rpc.polkadot.io' 
+      : 'wss://westend-rpc.polkadot.io';
+    
+    // Get private key
+    const privateKey = await askQuestion(rl, '\nEnter your private key (hex format with 0x prefix): ');
+    
+    // Get receiver address
+    const receiverAddress = await askQuestion(rl, 'Enter receiver wallet address: ');
+    
+    // Get amount
+    const amountStr = await askQuestion(rl, 'Enter amount to send (in DOT): ');
+    const amount = parseFloat(amountStr);
+    
+    return {
+      network,
       privateKey,
       receiverAddress,
       amount
-    );
-    
-    console.log('Transaction Details:');
-    console.log(`From: ${transaction.from}`);
-    console.log(`To: ${transaction.to}`);
-    console.log(`Amount: ${generator.planckToDot(transaction.amount)} DOT`);
-    console.log(`Estimated Fee: ${generator.planckToDot(transaction.estimatedFee)} DOT`);
-    
-    // Uncomment to send the transaction
-    // const result = await transaction.send();
-    // console.log('Transaction Result:', result);
-    
-  } catch (error) {
-    console.error('Error:', error.message);
+    };
   } finally {
-    await generator.disconnect();
+    rl.close();
   }
 }
 
-module.exports = { PolkadotTransactionGenerator };
+function validateInputs(privateKey, receiverAddress, amount) {
+  const errors = [];
+  
+  // Validate private key format
+  if (!privateKey.startsWith('0x') || privateKey.length !== 66) {
+    errors.push('Private key must be in hex format (0x...) and 64 characters long');
+  }
+  
+  // Validate amount
+  if (isNaN(amount) || amount <= 0) {
+    errors.push('Amount must be a positive number');
+  }
+  
+  // Validate receiver address (basic check)
+  if (!receiverAddress || receiverAddress.length < 40) {
+    errors.push('Invalid receiver address format');
+  }
+  
+  return errors;
+}
 
-// Run example if this file is executed directly
+async function executeTransaction() {
+  const generator = new PolkadotTransactionGenerator();
+  
+  try {
+    // Get user inputs from terminal
+    const { network, privateKey, receiverAddress, amount } = await getUserInputs();
+    
+    // Validate inputs
+    const validationErrors = validateInputs(privateKey, receiverAddress, amount);
+    if (validationErrors.length > 0) {
+      console.log('\nValidation Errors:');
+      validationErrors.forEach(error => console.log(`- ${error}`));
+      return;
+    }
+    
+    // Initialize connection
+    console.log('\nConnecting to network...');
+    await generator.initialize(network);
+    
+    // Additional address validation using keyring
+    if (!generator.isValidAddress(receiverAddress)) {
+      throw new Error('Invalid receiver address format');
+    }
+    
+    // Convert DOT to planck
+    const amountInPlanck = generator.dotToPlanck(amount);
+    
+    console.log('Processing your transaction...');
+    
+    // Send the transaction
+    const result = await generator.sendTransaction(
+      privateKey,
+      receiverAddress,
+      amountInPlanck
+    );
+    
+    console.log('\nTransaction Successful!');
+    console.log('Final Result:');
+    console.log(`Block Hash: ${result.blockHash}`);
+    console.log(`TX Hash: ${result.txHash}`);
+    console.log(`Amount Sent: ${result.amount}`);
+    console.log(`Fee Paid: ${result.fee}`);
+    
+  } catch (error) {
+    console.error('\nTransaction Failed:');
+    console.error(`Error: ${error.message}`);
+  } finally {
+    await generator.disconnect();
+    console.log('\nDisconnected from network');
+  }
+}
+
+module.exports = { PolkadotTransactionGenerator, executeTransaction };
+
+// Run transaction if this file is executed directly
 if (require.main === module) {
-  example();
-} 
+  executeTransaction();
+}
