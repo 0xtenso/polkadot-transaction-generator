@@ -185,23 +185,6 @@ console.log('Weight:', info.weight.toString());
 - Length Fee: ~0.001 DOT per byte
 - Tip: Optional priority fee
 
-## Security Best Practices
-
-### 🔒 Mnemonic Security
-- Never hardcode mnemonics in production
-- Use environment variables or secure key storage
-- Consider hardware wallets for high-value operations
-
-### 🔒 Transaction Validation
-- Always validate recipient addresses
-- Check account balances before transfers
-- Use `transferKeepAlive` to prevent account deletion
-
-### 🔒 Network Security
-- Use trusted RPC endpoints
-- Verify chain genesis hash
-- Monitor for network forks
-
 ## Error Handling
 
 Common transaction errors:
