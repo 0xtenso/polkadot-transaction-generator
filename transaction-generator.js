@@ -19,169 +19,104 @@ class PolkadotTransactionGenerator {
     this.keyring = new Keyring({ type: 'sr25519' });
     
     console.log('Connected to:', await this.api.rpc.system.chain());
-    console.log('Node version:', await this.api.rpc.system.version());
   }
 
-  // Generate Balance Transfer Transaction
-  async generateTransferTransaction(fromMnemonic, toAddress, amount) {
-    const sender = this.keyring.addFromMnemonic(fromMnemonic);
-    
-    // Create transfer extrinsic
-    const transfer = this.api.tx.balances.transferKeepAlive(toAddress, amount);
-    
-    // Get transaction info
-    const info = await transfer.paymentInfo(sender);
-    
-    return {
-      type: 'transfer',
-      from: sender.address,
-      to: toAddress,
-      amount: amount.toString(),
-      estimatedFee: info.partialFee.toString(),
-      weight: info.weight.toString(),
-      transaction: transfer,
-      // Sign the transaction
-      signAndSend: async () => {
-        return await transfer.signAndSend(sender);
-      }
-    };
-  }
-
-  // Generate Staking Transaction
-  async generateStakingTransaction(fromMnemonic, validatorAddress, amount) {
-    const sender = this.keyring.addFromMnemonic(fromMnemonic);
-    
-    // Create staking extrinsic
-    const stake = this.api.tx.staking.bond(validatorAddress, amount, 'Staked');
-    
-    const info = await stake.paymentInfo(sender);
-    
-    return {
-      type: 'staking',
-      from: sender.address,
-      validator: validatorAddress,
-      amount: amount.toString(),
-      estimatedFee: info.partialFee.toString(),
-      transaction: stake,
-      signAndSend: async () => {
-        return await stake.signAndSend(sender);
-      }
-    };
-  }
-
-  // Generate Democracy Vote Transaction
-  async generateVoteTransaction(fromMnemonic, proposalIndex, vote) {
-    const sender = this.keyring.addFromMnemonic(fromMnemonic);
-    
-    // Create vote extrinsic
-    const voteExtrinsic = this.api.tx.democracy.vote(proposalIndex, vote);
-    
-    const info = await voteExtrinsic.paymentInfo(sender);
-    
-    return {
-      type: 'democracy_vote',
-      from: sender.address,
-      proposalIndex,
-      vote: vote.toString(),
-      estimatedFee: info.partialFee.toString(),
-      transaction: voteExtrinsic,
-      signAndSend: async () => {
-        return await voteExtrinsic.signAndSend(sender);
-      }
-    };
-  }
-
-  // Generate Batch Transaction
-  async generateBatchTransaction(fromMnemonic, transactions) {
-    const sender = this.keyring.addFromMnemonic(fromMnemonic);
-    
-    // Create batch extrinsic
-    const batchTx = this.api.tx.utility.batch(transactions);
-    
-    const info = await batchTx.paymentInfo(sender);
-    
-    return {
-      type: 'batch',
-      from: sender.address,
-      transactionCount: transactions.length,
-      estimatedFee: info.partialFee.toString(),
-      transaction: batchTx,
-      signAndSend: async () => {
-        return await batchTx.signAndSend(sender);
-      }
-    };
-  }
-
-  // Generate XCM Transaction (Cross-chain)
-  async generateXCMTransaction(fromMnemonic, destinationChain, beneficiary, amount) {
-    const sender = this.keyring.addFromMnemonic(fromMnemonic);
-    
-    // Create XCM transfer
-    const xcmTransfer = this.api.tx.xcmPallet.reserveTransferAssets(
-      destinationChain,
-      beneficiary,
-      [{ id: { Concrete: { parents: 0, interior: 'Here' } }, fun: { Fungible: amount } }],
-      0
-    );
-    
-    const info = await xcmTransfer.paymentInfo(sender);
-    
-    return {
-      type: 'xcm_transfer',
-      from: sender.address,
-      destinationChain,
-      beneficiary,
-      amount: amount.toString(),
-      estimatedFee: info.partialFee.toString(),
-      transaction: xcmTransfer,
-      signAndSend: async () => {
-        return await xcmTransfer.signAndSend(sender);
-      }
-    };
-  }
-
-  // Get Account Information
-  async getAccountInfo(address) {
-    const accountInfo = await this.api.query.system.account(address);
-    return {
-      address,
-      balance: {
-        free: accountInfo.data.free.toString(),
-        reserved: accountInfo.data.reserved.toString(),
-        frozen: accountInfo.data.frozen.toString()
-      },
-      nonce: accountInfo.nonce.toString()
-    };
-  }
-
-  // Monitor Transaction Status
-  async monitorTransaction(txHash) {
-    return new Promise((resolve, reject) => {
-      let unsubscribe;
+  /**
+   * Create a transfer transaction
+   * @param {string} privateKey - Private key in hex format (0x...)
+   * @param {string} toAddress - Recipient's wallet address
+   * @param {string|number} amount - Amount to transfer in planck (smallest unit)
+   * @returns {Object} Transaction object with details and send function
+   */
+  async createTransaction(privateKey, toAddress, amount) {
+    try {
+      // Create keypair from private key
+      const sender = this.keyring.addFromSeed(privateKey);
       
-      this.api.rpc.chain.subscribeFinalisedHeads(async (header) => {
-        const blockHash = header.hash;
-        const blockNumber = header.number;
+      // Validate recipient address
+      if (!this.isValidAddress(toAddress)) {
+        throw new Error('Invalid recipient address');
+      }
+
+      // Create transfer transaction
+      const transfer = this.api.tx.balances.transferKeepAlive(toAddress, amount);
+      
+      // Get transaction fee estimation
+      const info = await transfer.paymentInfo(sender);
+      
+      return {
+        from: sender.address,
+        to: toAddress,
+        amount: amount.toString(),
+        estimatedFee: info.partialFee.toString(),
         
-        // Check if transaction is in this block
-        const block = await this.api.rpc.chain.getBlock(blockHash);
-        const txInBlock = block.block.extrinsics.find(ext => 
-          ext.hash.toString() === txHash
-        );
-        
-        if (txInBlock) {
-          console.log(`Transaction ${txHash} included in block ${blockNumber}`);
-          unsubscribe();
-          resolve({
-            blockNumber: blockNumber.toString(),
-            blockHash: blockHash.toString(),
-            txHash
+        // Send the transaction
+        send: async () => {
+          return new Promise((resolve, reject) => {
+            transfer.signAndSend(sender, ({ status, events }) => {
+              if (status.isInBlock) {
+                console.log(`Transaction included in block: ${status.asInBlock}`);
+                
+                // Check for transaction success/failure
+                const success = events.some(({ event }) => 
+                  this.api.events.system.ExtrinsicSuccess.is(event)
+                );
+                
+                if (success) {
+                  resolve({
+                    success: true,
+                    blockHash: status.asInBlock.toString(),
+                    txHash: transfer.hash.toString()
+                  });
+                } else {
+                  const errorEvent = events.find(({ event }) =>
+                    this.api.events.system.ExtrinsicFailed.is(event)
+                  );
+                  reject(new Error(`Transaction failed: ${errorEvent?.event?.data}`));
+                }
+              } else if (status.isFinalized) {
+                console.log(`Transaction finalized: ${status.asFinalized}`);
+              }
+            }).catch(reject);
           });
         }
-      }).then(unsub => {
-        unsubscribe = unsub;
-      }).catch(reject);
-    });
+      };
+      
+    } catch (error) {
+      throw new Error(`Failed to create transaction: ${error.message}`);
+    }
+  }
+
+  /**
+   * Validate Polkadot address format
+   * @param {string} address 
+   * @returns {boolean}
+   */
+  isValidAddress(address) {
+    try {
+      this.keyring.decodeAddress(address);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Convert DOT amount to planck (smallest unit)
+   * @param {number} dotAmount - Amount in DOT
+   * @returns {string} Amount in planck
+   */
+  dotToPlanck(dotAmount) {
+    return (dotAmount * 1e12).toString();
+  }
+
+  /**
+   * Convert planck to DOT
+   * @param {string|number} planckAmount - Amount in planck
+   * @returns {string} Amount in DOT
+   */
+  planckToDot(planckAmount) {
+    return (Number(planckAmount) / 1e12).toFixed(6);
   }
 
   async disconnect() {
@@ -191,44 +126,44 @@ class PolkadotTransactionGenerator {
   }
 }
 
-// Example Usage
+// Simple usage example
 async function example() {
   const generator = new PolkadotTransactionGenerator();
   
   try {
     // Initialize connection
-    await generator.initialize();
+    await generator.initialize('wss://westend-rpc.polkadot.io'); // Using testnet
     
-    // Example mnemonic (DO NOT use in production)
-    const testMnemonic = 'bottom drive obey lake curtain smoke basket hold race lonely fit walk';
+    // Example private key (32 bytes hex) - DO NOT use in production
+    const privateKey = '0x' + '0'.repeat(64); // Replace with actual private key
+    const receiverAddress = '5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY';
+    const amount = generator.dotToPlanck(1); // 1 DOT
     
-    // Generate different types of transactions
-    const transferTx = await generator.generateTransferTransaction(
-      testMnemonic,
-      '5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY', // Alice
-      10000000000 // 1 DOT (10^10 planck)
+    // Create transaction
+    const transaction = await generator.createTransaction(
+      privateKey,
+      receiverAddress,
+      amount
     );
     
-    console.log('Transfer Transaction:', {
-      type: transferTx.type,
-      from: transferTx.from,
-      to: transferTx.to,
-      amount: transferTx.amount,
-      estimatedFee: transferTx.estimatedFee
-    });
+    console.log('Transaction Details:');
+    console.log(`From: ${transaction.from}`);
+    console.log(`To: ${transaction.to}`);
+    console.log(`Amount: ${generator.planckToDot(transaction.amount)} DOT`);
+    console.log(`Estimated Fee: ${generator.planckToDot(transaction.estimatedFee)} DOT`);
     
-    // Get account info
-    const accountInfo = await generator.getAccountInfo(transferTx.from);
-    console.log('Account Info:', accountInfo);
+    // Uncomment to send the transaction
+    // const result = await transaction.send();
+    // console.log('Transaction Result:', result);
     
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Error:', error.message);
   } finally {
     await generator.disconnect();
   }
 }
 
-module.exports = { PolkadotTransactionGenerator, example };
+module.exports = { PolkadotTransactionGenerator };
 
 // Run example if this file is executed directly
 if (require.main === module) {
